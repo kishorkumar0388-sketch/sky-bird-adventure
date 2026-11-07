@@ -1,0 +1,1056 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Flappy Bird Ultimate</title>
+
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    background: radial-gradient(circle, #263e65, #101629);
+    font-family: Arial, sans-serif;
+    color: white;
+    overflow: hidden;
+}
+
+.app { width: min(420px, 96vw); text-align: center; }
+
+h1 {
+    margin-bottom: 12px;
+    font-size: 26px;
+    letter-spacing: 2px;
+    text-shadow: 0 3px 10px #0008;
+}
+
+canvas {
+    width: 100%;
+    display: block;
+    border-radius: 18px;
+    box-shadow: 0 15px 45px #0009;
+    touch-action: none;
+}
+
+.help { font-size: 12px; margin-top: 12px; color: #c9d7ef; }
+</style>
+</head>
+
+<body>
+<div class="app">
+    <h1>?? FLAPPY ULTIMATE</h1>
+    <canvas id="game" width="420" height="700"></canvas>
+    <div class="help">SPACE / CLICK / TAP TO FLY • P TO PAUSE</div>
+</div>
+
+<script>
+// ======================================
+// FLAPPY BIRD ULTIMATE
+// ======================================
+
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+
+const W = 420, H = 700;
+const GROUND = 75;
+
+let state = "menu";
+let score = 0;
+let best = 0;
+let coins = 0;
+let runCoins = 0;
+let frame = 0;
+let time = 0;
+let pipeTimer = 0;
+let shake = 0;
+let groundOffset = 0;
+let lastTime = 0;
+
+let soundEnabled = true;
+let musicEnabled = false;
+let audio = null;
+let musicTimer = null;
+
+const difficulty = {
+    Easy:   { speed: 145, gap: 205, gravity: 1350, flap: -430 },
+    Normal: { speed: 180, gap: 175, gravity: 1550, flap: -460 },
+    Hard:   { speed: 220, gap: 150, gravity: 1750, flap: -480 }
+};
+
+let mode = "Normal";
+
+const bird = {
+    x: 105, y: 300,
+    vy: 0,
+    rotation: 0,
+    wing: 0,
+    radius: 14
+};
+
+let pipes = [];
+let particles = [];
+let floatingTexts = [];
+let clouds = [
+    {x: 50, y: 120, s: 1},
+    {x: 280, y: 220, s: 1.2},
+    {x: 450, y: 90, s: 0.8},
+    {x: 160, y: 350, s: 0.7}
+];
+
+const skins = [
+    {name:"Classic", color:"#ffd32a", price:0, eye:"#222"},
+    {name:"Blue Bird", color:"#39bdf5", price:15, eye:"#222"},
+    {name:"Red Bird", color:"#ff5252", price:30, eye:"#222"},
+    {name:"Purple Bird", color:"#bd73ff", price:50, eye:"#222"},
+    {name:"Golden Bird", color:"#ffad00", price:80, eye:"#4b2500"},
+    {name:"Emerald Bird", color:"#36dc91", price:120, eye:"#123"}
+];
+
+let unlocked = [0];
+let selectedSkin = 0;
+
+let buttons = [];
+
+// ======================================
+// SAVE SYSTEM
+// ======================================
+
+function loadData() {
+    try {
+        const data = JSON.parse(
+            localStorage.getItem("flappyUltimate") || "{}"
+        );
+
+        best = data.best || 0;
+        coins = data.coins || 0;
+        unlocked = Array.isArray(data.unlocked) ? data.unlocked : [0];
+        selectedSkin = data.selectedSkin || 0;
+        mode = data.mode || "Normal";
+        soundEnabled = data.soundEnabled !== false;
+        musicEnabled = data.musicEnabled === true;
+    } catch(e) {}
+
+    if (!unlocked.includes(0)) unlocked.push(0);
+    if (!unlocked.includes(selectedSkin)) selectedSkin = 0;
+    if (!skins[selectedSkin]) selectedSkin = 0;
+}
+
+function saveData() {
+    try {
+        localStorage.setItem("flappyUltimate", JSON.stringify({
+            best, coins, unlocked, selectedSkin,
+            mode, soundEnabled, musicEnabled
+        }));
+    } catch(e) {}
+}
+
+loadData();
+
+// ======================================
+// SOUND ENGINE
+// ======================================
+
+function initAudio() {
+    if (!audio) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (AC) audio = new AC();
+    }
+
+    if (audio && audio.state === "suspended") {
+        audio.resume();
+    }
+}
+
+function tone(freq, duration, type="sine", volume=0.07) {
+    if (!soundEnabled) return;
+
+    initAudio();
+    if (!audio) return;
+
+    const osc = audio.createOscillator();
+    const gain = audio.createGain();
+
+    osc.type = type;
+    osc.frequency.value = freq;
+
+    gain.gain.setValueAtTime(volume, audio.currentTime);
+    gain.gain.exponentialRampToValueAtTime(
+        0.001, audio.currentTime + duration
+    );
+
+    osc.connect(gain);
+    gain.connect(audio.destination);
+
+    osc.start();
+    osc.stop(audio.currentTime + duration);
+}
+
+function playSound(type) {
+    if (type === "flap") tone(450, .12, "sine");
+    if (type === "coin") {
+        tone(700, .1, "sine");
+        setTimeout(() => tone(1000, .15, "sine"), 70);
+    }
+    if (type === "score") tone(850, .2, "triangle");
+    if (type === "hit") tone(120, .35, "sawtooth");
+    if (type === "unlock") {
+        tone(600, .15);
+        setTimeout(() => tone(850, .2), 120);
+    }
+}
+
+function toggleMusic() {
+    musicEnabled = !musicEnabled;
+    saveData();
+
+    if (musicEnabled) {
+        startMusic();
+    } else {
+        stopMusic();
+    }
+}
+
+function startMusic() {
+    stopMusic();
+    if (!musicEnabled) return;
+
+    const notes = [262, 330, 392, 330, 294, 349, 440, 349];
+    let i = 0;
+
+    musicTimer = setInterval(() => {
+        if (musicEnabled && state === "playing") {
+            tone(notes[i % notes.length], .2, "triangle", .018);
+            i++;
+        }
+    }, 330);
+}
+
+function stopMusic() {
+    if (musicTimer) clearInterval(musicTimer);
+    musicTimer = null;
+}
+
+// ======================================
+// HELPERS
+// ======================================
+
+function random(min, max) {
+    return Math.random() * (max - min) + min;
+}
+
+function roundedRect(x, y, w, h, r, color) {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.roundRect(x, y, w, h, r);
+    ctx.fill();
+}
+
+function addText(text, x, y, size=20, color="white", weight="bold") {
+    ctx.font = `${weight} ${size}px Arial`;
+    ctx.textAlign = "center";
+    ctx.fillStyle = color;
+    ctx.fillText(text, x, y);
+}
+
+// ======================================
+// BUTTON SYSTEM
+// ======================================
+
+function button(id, x, y, w, h, label, color="#2478a8") {
+    buttons.push({id, x, y, w, h});
+
+    roundedRect(x, y, w, h, 12, color);
+    ctx.strokeStyle = "#ffffff70";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x, y, w, h);
+
+    addText(label, x+w/2, y+h/2+6, 16);
+}
+
+function panel() {
+    roundedRect(25, 75, 370, 550, 22, "#102b42ee");
+    ctx.strokeStyle = "#ffffff60";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(25, 75, 370, 550);
+}
+
+function hitButton(id) {
+    switch(id) {
+        case "play":
+            resetGame();
+            break;
+
+        case "shop":
+            state = "shop";
+            break;
+
+        case "back":
+            state = "menu";
+            break;
+
+        case "pause":
+            state = "paused";
+            stopMusic();
+            break;
+
+        case "resume":
+            state = "playing";
+            if (musicEnabled) startMusic();
+            break;
+
+        case "restart":
+            resetGame();
+            break;
+
+        case "home":
+            state = "menu";
+            stopMusic();
+            break;
+
+        case "easy":
+        case "normal":
+        case "hard":
+            mode = id.charAt(0).toUpperCase() + id.slice(1);
+            saveData();
+            break;
+
+        case "sound":
+            soundEnabled = !soundEnabled;
+            saveData();
+            break;
+
+        case "music":
+            toggleMusic();
+            break;
+    }
+
+    if (id.startsWith("skin")) {
+        const index = Number(id.slice(4));
+        const skin = skins[index];
+
+        if (unlocked.includes(index)) {
+            selectedSkin = index;
+            saveData();
+        } else if (coins >= skin.price) {
+            coins -= skin.price;
+            unlocked.push(index);
+            selectedSkin = index;
+            saveData();
+            playSound("unlock");
+        }
+    }
+}
+
+// ======================================
+// PARTICLES
+// ======================================
+
+function burst(x, y, amount, color) {
+    for(let i=0; i<amount; i++) {
+        particles.push({
+            x, y,
+            vx: random(-150,150),
+            vy: random(-170,80),
+            size: random(2,6),
+            life: random(.3,.7),
+            maxLife: .7,
+            color
+        });
+    }
+}
+
+function updateParticles(dt) {
+    particles.forEach(p => {
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+        p.vy += 300 * dt;
+        p.life -= dt;
+    });
+
+    particles = particles.filter(p => p.life > 0);
+
+    floatingTexts.forEach(t => {
+        t.y -= 35 * dt;
+        t.life -= dt;
+    });
+
+    floatingTexts = floatingTexts.filter(t => t.life > 0);
+}
+
+// ======================================
+// BACKGROUND
+// ======================================
+
+function drawBackground() {
+    let sky = ctx.createLinearGradient(0,0,0,H);
+    sky.addColorStop(0,"#42bdf0");
+    sky.addColorStop(1,"#c9f2ff");
+
+    ctx.fillStyle = sky;
+    ctx.fillRect(0,0,W,H);
+
+    // Sun
+    ctx.fillStyle = "#fff3a0";
+    ctx.beginPath();
+    ctx.arc(340,110,40,0,Math.PI*2);
+    ctx.fill();
+
+    // Clouds
+    clouds.forEach(c => {
+        ctx.save();
+        ctx.translate(c.x,c.y);
+        ctx.scale(c.s,c.s);
+
+        ctx.fillStyle = "#ffffffd9";
+        ctx.beginPath();
+        ctx.arc(0,0,20,0,Math.PI*2);
+        ctx.arc(25,-12,27,0,Math.PI*2);
+        ctx.arc(52,0,20,0,Math.PI*2);
+        ctx.fill();
+
+        ctx.restore();
+    });
+
+    // Hills
+    ctx.fillStyle="#a4e69a";
+    ctx.beginPath();
+    ctx.moveTo(0,560);
+    ctx.quadraticCurveTo(100,440,220,560);
+    ctx.quadraticCurveTo(330,430,420,550);
+    ctx.lineTo(420,650);
+    ctx.lineTo(0,650);
+    ctx.fill();
+
+    ctx.fillStyle="#72c878";
+    ctx.beginPath();
+    ctx.moveTo(0,600);
+    ctx.quadraticCurveTo(130,510,250,610);
+    ctx.quadraticCurveTo(350,510,420,590);
+    ctx.lineTo(420,650);
+    ctx.lineTo(0,650);
+    ctx.fill();
+}
+
+// ======================================
+// BIRD
+// ======================================
+
+function drawBird() {
+    const skin = skins[selectedSkin];
+
+    ctx.save();
+    ctx.translate(bird.x+15,bird.y+15);
+    ctx.rotate(bird.rotation);
+
+    // Shadow
+    ctx.fillStyle="#0003";
+    ctx.beginPath();
+    ctx.ellipse(0,5,18,14,0,0,Math.PI*2);
+    ctx.fill();
+
+    // Body gradient
+    const gradient=ctx.createRadialGradient(-6,-8,2,0,0,22);
+    gradient.addColorStop(0,"#ffffff");
+    gradient.addColorStop(.3,skin.color);
+    gradient.addColorStop(1,"#cc7800");
+
+    ctx.fillStyle=gradient;
+    ctx.beginPath();
+    ctx.ellipse(0,0,18,15,0,0,Math.PI*2);
+    ctx.fill();
+
+    // Wing
+    ctx.save();
+    ctx.rotate(Math.sin(bird.wing)*.5);
+
+    ctx.fillStyle=skin.color;
+    ctx.beginPath();
+    ctx.ellipse(-7,6,10,7,-.5,0,Math.PI*2);
+    ctx.fill();
+    ctx.restore();
+
+    // Eye
+    ctx.fillStyle="white";
+    ctx.beginPath();
+    ctx.arc(8,-7,6,0,Math.PI*2);
+    ctx.fill();
+
+    ctx.fillStyle=skin.eye;
+    ctx.beginPath();
+    ctx.arc(10,-7,2.5,0,Math.PI*2);
+    ctx.fill();
+
+    // Beak
+    ctx.fillStyle="#ff7139";
+    ctx.beginPath();
+    ctx.moveTo(14,0);
+    ctx.lineTo(27,5);
+    ctx.lineTo(14,10);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.restore();
+}
+
+// ======================================
+// PIPES
+// ======================================
+
+function drawPipe(p) {
+    const gradient=ctx.createLinearGradient(p.x,0,p.x+72,0);
+    gradient.addColorStop(0,"#087a2b");
+    gradient.addColorStop(.35,"#62e66b");
+    gradient.addColorStop(.7,"#24b73c");
+    gradient.addColorStop(1,"#075b21");
+
+    ctx.fillStyle=gradient;
+    ctx.strokeStyle="#07541d";
+    ctx.lineWidth=3;
+
+    // Top
+    ctx.fillRect(p.x,0,72,p.top);
+    ctx.strokeRect(p.x,0,72,p.top);
+
+    ctx.fillRect(p.x-6,p.top-25,84,25);
+    ctx.strokeRect(p.x-6,p.top-25,84,25);
+
+    // Bottom
+    ctx.fillRect(p.x,p.bottom,72,H-GROUND-p.bottom);
+    ctx.strokeRect(p.x,p.bottom,72,H-GROUND-p.bottom);
+
+    ctx.fillRect(p.x-6,p.bottom,84,25);
+    ctx.strokeRect(p.x-6,p.bottom,84,25);
+
+    ctx.fillStyle="#ffffff35";
+    ctx.fillRect(p.x+9,0,7,p.top-25);
+    ctx.fillRect(p.x+9,p.bottom+25,7,H-GROUND-p.bottom-25);
+}
+
+// ======================================
+// COINS
+// ======================================
+
+function drawCoin(c) {
+    ctx.save();
+    ctx.translate(c.x,c.y);
+
+    const width = Math.max(.2,Math.abs(Math.cos(time*5)));
+    ctx.scale(width,1);
+
+    ctx.fillStyle="#ffb900";
+    ctx.beginPath();
+    ctx.arc(0,0,12,0,Math.PI*2);
+    ctx.fill();
+
+    ctx.strokeStyle="#fff19b";
+    ctx.lineWidth=3;
+    ctx.stroke();
+
+    ctx.fillStyle="#fff2a3";
+    ctx.font="bold 14px Arial";
+    ctx.textAlign="center";
+    ctx.fillText("$",0,5);
+
+    ctx.restore();
+}
+
+// ======================================
+// GROUND
+// ======================================
+
+function drawGround() {
+    ctx.fillStyle="#e8c879";
+    ctx.fillRect(0,H-GROUND,W,GROUND);
+
+    ctx.fillStyle="#70d34b";
+    ctx.fillRect(0,H-GROUND,W,13);
+
+    ctx.fillStyle="#b98a41";
+
+    for(let x=-30;x<W+30;x+=35) {
+        ctx.fillRect(x-groundOffset,H-40,17,5);
+        ctx.fillRect(x-groundOffset,H-20,12,4);
+    }
+}
+
+// ======================================
+// GAME RESET
+// ======================================
+
+function resetGame() {
+    score=0;
+    runCoins=0;
+    frame=0;
+    pipeTimer=0;
+
+    bird.y=300;
+    bird.vy=0;
+    bird.rotation=0;
+    bird.wing=0;
+
+    pipes=[];
+    particles=[];
+    floatingTexts=[];
+
+    state="playing";
+    flap();
+
+    if(musicEnabled) startMusic();
+}
+
+function flap() {
+    if(state!=="playing") return;
+
+    bird.vy=difficulty[mode].flap;
+    bird.wing=-.8;
+
+    playSound("flap");
+    burst(bird.x,bird.y+15,4,"#ffffff");
+}
+
+function endGame() {
+    if(state!=="playing") return;
+
+    state="over";
+    shake=12;
+
+    playSound("hit");
+    burst(bird.x+15,bird.y+15,25,"#ffbc28");
+
+    if(score>best) best=score;
+
+    saveData();
+    stopMusic();
+}
+
+// ======================================
+// GAME UPDATE
+// ======================================
+
+function update(dt) {
+    time+=dt;
+
+    clouds.forEach(c=>{
+        c.x-=12*c.s*dt;
+        if(c.x<-100)c.x=W+70;
+    });
+
+    if(state==="menu" || state==="ready") {
+        bird.y=300+Math.sin(time*3)*9;
+        bird.wing+=8*dt;
+    }
+
+    if(state==="playing") {
+        const settings=difficulty[mode];
+
+        frame++;
+
+        // Physics
+        bird.vy+=settings.gravity*dt;
+        bird.vy=Math.min(bird.vy,650);
+        bird.y+=bird.vy*dt;
+
+        bird.rotation=Math.min(
+            1.25,Math.max(-.5,bird.vy/650)
+        );
+
+        bird.wing+=15*dt;
+
+        // Pipes timer
+        pipeTimer+=dt;
+
+        if(pipeTimer>=1.45) {
+            pipeTimer=0;
+
+            const top=random(90,330);
+
+            const p={
+                x:W,
+                top,
+                bottom:top+settings.gap,
+                passed:false,
+                coinTaken:false
+            };
+
+            pipes.push(p);
+
+            // One coin inside each gap
+            p.coin={
+                x:W+36,
+                y:top+settings.gap/2,
+                collected:false
+            };
+        }
+
+        groundOffset=(groundOffset+100*dt)%35;
+
+        pipes.forEach(p=>{
+            p.x-=settings.speed*dt;
+
+            if(p.coin) {
+                p.coin.x=p.x+36;
+
+                if(!p.coin.collected) {
+                    const dx=bird.x+15-p.coin.x;
+                    const dy=bird.y+15-p.coin.y;
+
+                    if(Math.hypot(dx,dy)<25) {
+                        p.coin.collected=true;
+                        coins++;
+                        runCoins++;
+
+                        playSound("coin");
+                        burst(p.coin.x,p.coin.y,12,"#ffcc33");
+
+                        floatingTexts.push({
+                            x:p.coin.x,
+                            y:p.coin.y,
+                            life:.8,
+                            text:"+1 COIN"
+                        });
+
+                        saveData();
+                    }
+                }
+            }
+
+            // Score
+            if(!p.passed && p.x+72<bird.x) {
+                p.passed=true;
+                score++;
+
+                playSound("score");
+                floatingTexts.push({
+                    x:210,y:150,life:.7,text:"+1"
+                });
+            }
+
+            // Collision
+            const bx=bird.x+15;
+            const by=bird.y+15;
+
+            const horizontal=
+                bx+12>p.x && bx-12<p.x+72;
+
+            const vertical=
+                by-11<p.top || by+11>p.bottom;
+
+            if(horizontal&&vertical) endGame();
+        });
+
+        pipes=pipes.filter(p=>p.x>-100);
+
+        if(bird.y<0 || bird.y+30>H-GROUND) {
+            endGame();
+        }
+    }
+
+    updateParticles(dt);
+}
+
+// ======================================
+// DRAW GAME
+// ======================================
+
+function drawScore() {
+    addText(score,W/2,72,48,"white");
+
+    roundedRect(12,15,110,38,10,"#102d42aa");
+    addText("?? "+runCoins,67,41,17);
+
+    roundedRect(300,15,108,38,10,"#102d42aa");
+    addText("BEST "+best,354,40,15);
+
+    button("pause",365,65,43,36,"?","#285c83");
+}
+
+function draw() {
+    ctx.save();
+
+    if(shake>0) {
+        ctx.translate(random(-shake,shake),random(-shake,shake));
+        shake*=.85;
+    }
+
+    drawBackground();
+
+    pipes.forEach(p=>{
+        drawPipe(p);
+        if(p.coin&&!p.coin.collected) drawCoin(p.coin);
+    });
+
+    particles.forEach(p=>{
+        ctx.globalAlpha=Math.max(0,p.life/p.maxLife);
+        ctx.fillStyle=p.color;
+        ctx.beginPath();
+        ctx.arc(p.x,p.y,p.size,0,Math.PI*2);
+        ctx.fill();
+    });
+
+    ctx.globalAlpha=1;
+
+    floatingTexts.forEach(t=>{
+        ctx.globalAlpha=Math.max(0,t.life/.8);
+        addText(t.text,t.x,t.y,18,"#fff36a");
+    });
+
+    ctx.globalAlpha=1;
+
+    drawGround();
+    drawBird();
+
+    if(state==="playing") drawScore();
+
+    if(state==="menu") drawMenu();
+    if(state==="shop") drawShop();
+    if(state==="paused") drawPause();
+    if(state==="over") drawGameOver();
+
+    ctx.restore();
+}
+
+// ======================================
+// MENU
+// ======================================
+
+function drawMenu() {
+    panel();
+
+    addText("FLAPPY BIRD",210,160,37);
+    addText("ULTIMATE ARCADE",210,192,16,"#ffdc58");
+
+    drawBirdPreview();
+
+    addText("BEST SCORE: "+best,210,365,20);
+    addText("?? COINS: "+coins,210,395,20,"#ffdf65");
+
+    button("play",95,425,230,55,"? PLAY","#209b65");
+    button("shop",95,490,230,48,"?? BIRD SHOP","#8752ad");
+
+    button("easy",38,560,105,40,
+        mode==="Easy"?"? EASY":"EASY","#3975a5");
+
+    button("normal",157,560,105,40,
+        mode==="Normal"?"? NORMAL":"NORMAL","#3975a5");
+
+    button("hard",276,560,105,40,
+        mode==="Hard"?"? HARD":"HARD","#3975a5");
+
+    button("sound",45,610,150,35,
+        soundEnabled?"?? SOUND ON":"?? SOUND OFF");
+
+    button("music",225,610,150,35,
+        musicEnabled?"?? MUSIC ON":"?? MUSIC OFF");
+}
+
+function drawBirdPreview() {
+    ctx.save();
+    ctx.translate(210,280);
+    ctx.scale(1.8,1.8);
+
+    const oldX=bird.x,oldY=bird.y,oldRotation=bird.rotation;
+    bird.x=-15;
+    bird.y=-15;
+    bird.rotation=Math.sin(time*2)*.1;
+
+    drawBird();
+
+    bird.x=oldX;
+    bird.y=oldY;
+    bird.rotation=oldRotation;
+
+    ctx.restore();
+}
+
+// ======================================
+// SHOP
+// ======================================
+
+function drawShop() {
+    panel();
+
+    addText("BIRD SKIN SHOP",210,125,29);
+    addText("YOUR COINS: ?? "+coins,210,158,18,"#ffe46b");
+
+    skins.forEach((skin,i)=>{
+        const col=i%2;
+        const row=Math.floor(i/2);
+
+        const x=43+col*172;
+        const y=185+row*112;
+
+        roundedRect(x,y,160,100,12,
+            selectedSkin===i?"#236d59":"#244b67");
+
+        ctx.save();
+        ctx.fillStyle=skin.color;
+        ctx.beginPath();
+        ctx.arc(x+35,y+38,17,0,Math.PI*2);
+        ctx.fill();
+
+        ctx.fillStyle="white";
+        ctx.beginPath();
+        ctx.arc(x+41,y+32,5,0,Math.PI*2);
+        ctx.fill();
+
+        ctx.fillStyle="#222";
+        ctx.beginPath();
+        ctx.arc(x+42,y+32,2,0,Math.PI*2);
+        ctx.fill();
+        ctx.restore();
+
+        addText(skin.name,x+105,y+30,13);
+
+        const owned=unlocked.includes(i);
+
+        button(
+            "skin"+i,
+            x+15,y+59,130,30,
+            selectedSkin===i?"SELECTED":
+            owned?"USE":
+            "?? "+skin.price,
+            selectedSkin===i?"#269b6b":
+            owned?"#3975a5":"#a06b2d"
+        );
+    });
+
+    button("back",95,550,230,48,"? BACK TO MENU");
+}
+
+// ======================================
+// PAUSE
+// ======================================
+
+function drawPause() {
+    panel();
+
+    addText("PAUSED",210,235,40);
+    addText("Take a little break!",210,285,19);
+
+    button("resume",95,350,230,55,"? RESUME","#23965d");
+    button("home",95,420,230,48,"¦ MAIN MENU");
+}
+
+// ======================================
+// GAME OVER
+// ======================================
+
+function drawGameOver() {
+    panel();
+
+    addText("GAME OVER",210,190,37,"#ff7373");
+
+    addText("SCORE: "+score,210,250,27);
+    addText("BEST: "+best,210,290,21);
+    addText("?? COINS COLLECTED: "+runCoins,210,335,18,"#ffe06c");
+
+    button("restart",95,390,230,55,"? PLAY AGAIN","#209b65");
+    button("home",95,465,230,48,"¦ MAIN MENU");
+}
+
+// ======================================
+// INPUT
+// ======================================
+
+function handleAction() {
+    if(state==="menu") {
+        // Menu buttons are handled by hit testing.
+        return;
+    }
+
+    if(state==="playing") {
+        flap();
+    }
+
+    if(state==="over") {
+        // Wait for a button click.
+        return;
+    }
+}
+
+function pointerDown(e) {
+    e.preventDefault();
+
+    const rect=canvas.getBoundingClientRect();
+
+    const x=(e.clientX-rect.left)*W/rect.width;
+    const y=(e.clientY-rect.top)*H/rect.height;
+
+    initAudio();
+
+    let clicked=false;
+
+    for(let i=buttons.length-1;i>=0;i--) {
+        const b=buttons[i];
+
+        if(x>=b.x&&x<=b.x+b.w&&
+           y>=b.y&&y<=b.y+b.h) {
+            hitButton(b.id);
+            clicked=true;
+            break;
+        }
+    }
+
+    if(!clicked) handleAction();
+}
+
+canvas.addEventListener("pointerdown",pointerDown);
+
+document.addEventListener("keydown",e=>{
+    if(e.code==="Space") {
+        e.preventDefault();
+        initAudio();
+
+        if(state==="playing") flap();
+        else if(state==="menu") resetGame();
+        else if(state==="over") resetGame();
+        else if(state==="paused") {
+            state="playing";
+            if(musicEnabled) startMusic();
+        }
+    }
+
+    if(e.code==="KeyP") {
+        if(state==="playing") {
+            state="paused";
+            stopMusic();
+        }
+        else if(state==="paused") {
+            state="playing";
+            if(musicEnabled) startMusic();
+        }
+    }
+
+    if(e.code==="Escape" && state==="shop") {
+        state="menu";
+    }
+});
+
+// ======================================
+// MAIN LOOP
+// ======================================
+
+function loop(timestamp) {
+    const dt=lastTime?
+        Math.min((timestamp-lastTime)/1000,.033):0;
+
+    lastTime=timestamp;
+
+    if(state!=="paused") update(dt);
+
+    buttons=[];
+    draw();
+
+    requestAnimationFrame(loop);
+}
+
+requestAnimationFrame(loop);
+
+</script>
+</body>
+</html>
